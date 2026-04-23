@@ -1,0 +1,85 @@
+{
+  "targets": [
+    {
+      "handle": "karpathy",
+      "name": "Andrej Karpathy",
+      "url": "https://x.com/karpathy",
+      "keywords": ["AI", "LLM", "neural", "deep learning", "transformer", "GPT"]
+    },
+    {
+      "handle": "ylecun",
+      "name": "Yann LeCun",
+      "url": "https://x.com/ylecun",
+      "keywords": ["AI", "ML", "deep learning", "Meta AI"]
+    },
+    {
+      "handle": "AndrewYNg",
+      "name": "Andrew Ng",
+      "url": "https://x.com/AndrewYNg",
+      "keywords": ["AI", "machine learning", "deep learning", "course"]
+    },
+    {
+      "handle": "goodfellow_ian",
+      "name": "Ian Goodfellow",
+      "url": "https://x.com/goodfellow_ian",
+      "keywords": ["GAN", "generative", "AI", "deep learning"]
+    },
+    {
+      "handle": "hardmaru",
+      "name": "David Ha",
+      "url": "https://x.com/hardmaru",
+      "keywords": ["AI", "generative", "art", "neural"]
+    },
+    {
+      "handle": "DrJimFan",
+      "name": "Jim Fan",
+      "url": "https://x.com/DrJimFan",
+      "keywords": ["AI", "robotics", "embodied", "agent", "NVIDIA", "foundation model"]
+    },
+    {
+      "handle": "demishassabis",
+      "name": "Demis Hassabis",
+      "url": "https://x.com/demishassabis",
+      "keywords": ["AI", "DeepMind", "AGI", "AlphaFold", "science"]
+    },
+    {
+      "handle": "sama",
+      "name": "Sam Altman",
+      "url": "https://x.com/sama",
+      "keywords": ["AI", "OpenAI", "GPT", "AGI", "safety"]
+    },
+    {
+      "handle": "ilyasut",
+      "name": "Ilya Sutskever",
+      "url": "https://x.com/ilyasut",
+      "keywords": ["AI", "deep learning", "superintelligence", "safety", "SSI"]
+    }
+  ],
+  "monitoring": {
+    "interval_minutes": 720,
+    "max_tweets_per_check": 20,
+    "min_engagement_threshold": 100
+  },
+  "notification": {
+    "enabled": true,
+    "methods": ["console", "file", "feishu"],
+    "high_engagement_threshold": 1000
+  },
+  "feishu": {
+    "enabled": true,
+    "chat_id": "",
+    "webhook_url": "",
+    "use_lark_cli": true,
+    "as": "bot"
+  },
+  "daily_summary": {
+    "enabled": true,
+    "hour": 18.5,
+    "top_n_per_user": 3,
+    "report_dir": "reports"
+  },
+  "storage": {
+    "tweet_history_days": 7,
+    "data_dir": "data"
+  }
+}
