@@ -1,187 +1,165 @@
 #!/usr/bin/env node
 
 /**
- * 每日 AI 洞见汇总报告
- * 从 data/ 读取当天推文，生成模板化 Markdown 报告并推送飞书
+ * 每日 AI 洞见日报 — LLM 生成结构化版本
+ *
+ * 流程：
+ *   1. 从 data/ 读取当天的所有推文（按本地时区切割）
+ *   2. 对没有 llm_insight 的推文补 enrich（一般不会发生，因 monitor.js 已 enrich 并持久化）
+ *   3. 调用 insights.aggregateDailyInsights → LLM 生成结构化 markdown 日报
+ *   4. 写到 reports/daily/YYYY-MM-DD.md（中期记忆）
+ *   5. 推送飞书简短摘要
+ *
+ * 环境变量：
+ *   LLM_DRY_RUN=1  使用 mock LLM 输出，不消耗 token
+ *   NO_NOTIFY=1    不推送飞书
  */
 
 const fs = require('fs');
 const path = require('path');
 const notify = require('./notify');
+const insights = require('./insights');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-const REPORT_DIR = path.join(__dirname, '..', config.daily_summary.report_dir || 'reports');
+const REPORT_BASE = path.join(__dirname, '..', config.daily_summary.report_dir || 'reports');
+const DAILY_DIR = path.join(REPORT_BASE, 'daily');
 
-fs.mkdirSync(REPORT_DIR, { recursive: true });
+const DRY_RUN = !!process.env.LLM_DRY_RUN;
+const NO_NOTIFY = !!process.env.NO_NOTIFY;
+
+fs.mkdirSync(DAILY_DIR, { recursive: true });
+
+// ---------- 读取今日推文 ----------
+
+function todayCutoff() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
 
 function loadTodayTweets() {
-  const now = new Date();
-  const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const results = [];
-
+  const cutoff = todayCutoff();
+  const groups = [];
   for (const target of config.targets) {
     const file = path.join(DATA_DIR, `${target.handle}.json`);
     if (!fs.existsSync(file)) continue;
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const todayTweets = (data.tweets || []).filter(t => {
-      if (!t.time) return false;
-      return new Date(t.time).getTime() >= cutoff;
-    });
-    if (todayTweets.length > 0) {
-      results.push({ target, tweets: todayTweets, lastChecked: data.lastChecked });
-    }
+    let data;
+    try { data = JSON.parse(fs.readFileSync(file, 'utf8')); }
+    catch { continue; }
+    const todayTweets = (data.tweets || []).filter(t =>
+      t.time && new Date(t.time).getTime() >= cutoff,
+    );
+    if (todayTweets.length > 0) groups.push({ target, tweets: todayTweets });
   }
-  return results;
+  return groups;
 }
 
-function scoreTweet(tweet, keywords) {
-  const text = tweet.text.toLowerCase();
-  let score = 0;
-  keywords.forEach(kw => { if (text.includes(kw.toLowerCase())) score += 10; });
-  const total = ((tweet.engagement && tweet.engagement.likes) || 0) + ((tweet.engagement && tweet.engagement.retweets) || 0) + ((tweet.engagement && tweet.engagement.replies) || 0);
-  if (total > 1000) score += 15;
-  else if (total > 500) score += 10;
-  else if (total > 100) score += 5;
-  if (tweet.text.length > 200) score += 2;
-  return { score, totalEngagement: total };
+// ---------- 补 enrich（兜底）----------
+
+async function backfillEnrich(groups) {
+  for (const g of groups) {
+    for (const t of g.tweets) {
+      if (t.llm_insight) continue;
+      console.log(`  💭 补 enrich [${g.target.handle}] ${t.url}`);
+      t.llm_insight = await insights.extractTweetInsight(t, g.target, { dry_run: DRY_RUN });
+      // 写回 data/{handle}.json，下次不再调
+      writeBackInsight(g.target.handle, t);
+    }
+  }
 }
 
-function extractTopics(allTweets) {
-  const freq = {};
-  const topicKeywords = ['AI', 'LLM', 'GPT', 'AGI', 'transformer', 'robotics', 'agent', 'safety',
-    'open source', 'reasoning', 'multimodal', 'diffusion', 'RL', 'RLHF', 'scaling',
-    'foundation model', 'fine-tuning', 'RAG', 'inference', 'training', 'benchmark'];
-  for (const tweet of allTweets) {
-    const text = tweet.text.toLowerCase();
-    for (const kw of topicKeywords) {
-      if (text.includes(kw.toLowerCase())) freq[kw] = (freq[kw] || 0) + 1;
-    }
+function writeBackInsight(handle, tweet) {
+  const file = path.join(DATA_DIR, `${handle}.json`);
+  if (!fs.existsSync(file)) return;
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const t = (data.tweets || []).find(x => x.url === tweet.url);
+  if (t) {
+    t.llm_insight = tweet.llm_insight;
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
   }
-  return Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 8);
 }
 
-function generateReport(data) {
-  const date = new Date().toISOString().split('T')[0];
-  const topN = config.daily_summary.top_n_per_user || 3;
+// ---------- 飞书摘要（短版） ----------
 
-  // 收集所有推文用于话题分析
-  const allTweets = data.flatMap(d => d.tweets);
-  const topics = extractTopics(allTweets);
-
-  // 收集所有推文并排序，取全局 Top 5
-  const allScored = [];
-  for (const { target, tweets } of data) {
-    for (const t of tweets) {
-      const { score, totalEngagement } = scoreTweet(t, target.keywords);
-      allScored.push({ ...t, _name: target.name, _handle: target.handle, _score: score, _eng: totalEngagement });
+function buildFeishuSummary(date, groups) {
+  const allInsights = [];
+  for (const g of groups) {
+    for (const t of g.tweets) {
+      if (t.llm_insight?.skip) continue;
+      allInsights.push({ name: g.target.name, handle: g.target.handle, tweet: t });
     }
   }
-  allScored.sort((a, b) => b._score - a._score || b._eng - a._eng);
-  const globalTop = allScored.slice(0, 5);
+  // 按 novelty 排
+  allInsights.sort((a, b) =>
+    (b.tweet.llm_insight?.novelty ?? 0) - (a.tweet.llm_insight?.novelty ?? 0),
+  );
 
-  let md = `# 🤖 AI 大佬每日洞见 | ${date}\n\n`;
-  md += `> 监控 ${config.targets.length} 位 AI 大佬 | 今日捕获 ${allTweets.length} 条推文\n\n`;
+  let msg = `📊 **AI 大佬日报** | ${date}\n`;
+  msg += `监控 ${config.targets.length} 人 | 今日 ${groups.reduce((s, g) => s + g.tweets.length, 0)} 条推文\n\n`;
 
-  // 热门话题
-  if (topics.length > 0) {
-    md += `## 📈 今日热门话题\n\n`;
-    md += topics.map(([kw, cnt]) => `- **${kw}** (${cnt} 次提及)`).join('\n');
-    md += '\n\n';
+  if (allInsights.length === 0) {
+    msg += '今日无高信号推文（或全部被判定为低价值）。';
+    return msg;
   }
 
-  // 全局 Top 推文
-  if (globalTop.length > 0) {
-    md += `## 🔥 今日最重要推文\n\n`;
-    for (const t of globalTop) {
-      const hot = t._eng > 1000 ? ' 🔥' : '';
-      md += `### ${t._name}${hot}\n`;
-      md += `> ${t.text.substring(0, 300)}${t.text.length > 300 ? '...' : ''}\n\n`;
-      md += `👍${t.engagement.likes} 🔄${t.engagement.retweets} 💬${t.engagement.replies} | ⭐${t._score}分 | [原文](${t.url})\n\n`;
-    }
+  msg += '🔥 **今日核心信号 Top 5**:\n';
+  for (const item of allInsights.slice(0, 5)) {
+    const ins = item.tweet.llm_insight;
+    msg += `• [${item.name}] ${ins.one_liner} `;
+    msg += `(novelty:${ins.novelty}) [→](${item.tweet.url})\n`;
   }
-
-  // 按人物分组
-  md += `## 👥 各大佬动态\n\n`;
-  for (const { target, tweets } of data) {
-    const scored = tweets.map(t => {
-      const { score, totalEngagement } = scoreTweet(t, target.keywords);
-      return { ...t, _score: score, _eng: totalEngagement };
-    }).sort((a, b) => b._score - a._score);
-
-    const top = scored.slice(0, topN);
-    md += `### ${target.name} (@${target.handle}) — ${tweets.length} 条\n\n`;
-    for (const t of top) {
-      const time = t.time ? new Date(t.time).toLocaleString('zh-CN') : '';
-      md += `- **[${time}]** ${t.text.substring(0, 150)}${t.text.length > 150 ? '...' : ''} 👍${t.engagement.likes} [→](${t.url})\n`;
-    }
-    md += '\n';
-  }
-
-  // 无数据的大佬
-  const activeHandles = new Set(data.map(d => d.target.handle));
-  const inactive = config.targets.filter(t => !activeHandles.has(t.handle));
-  if (inactive.length > 0) {
-    md += `### 今日无更新\n\n`;
-    md += inactive.map(t => `- ${t.name} (@${t.handle})`).join('\n');
-    md += '\n\n';
-  }
-
-  md += `---\n*生成时间: ${new Date().toLocaleString('zh-CN')}*\n`;
-  return md;
-}
-
-function generateFeishuSummary(data) {
-  const allTweets = data.flatMap(d => d.tweets);
-  const allScored = [];
-  for (const { target, tweets } of data) {
-    for (const t of tweets) {
-      const { score, totalEngagement } = scoreTweet(t, target.keywords);
-      allScored.push({ ...t, _name: target.name, _score: score, _eng: totalEngagement });
-    }
-  }
-  allScored.sort((a, b) => b._score - a._score);
-  const top3 = allScored.slice(0, 3);
-
-  let msg = `📊 **AI 大佬日报** | ${new Date().toISOString().split('T')[0]}\n`;
-  msg += `监控 ${config.targets.length} 人 | 今日 ${allTweets.length} 条推文\n\n`;
-
-  if (top3.length > 0) {
-    msg += `🔥 **Top 推文:**\n`;
-    for (const t of top3) {
-      msg += `• ${t._name}: ${t.text.substring(0, 100)}... 👍${t.engagement.likes}\n`;
-    }
-  } else {
-    msg += '今日暂无新推文';
-  }
+  msg += '\n📄 详细日报已写入 reports/daily/';
   return msg;
 }
 
-async function main() {
-  console.log(`📊 生成每日汇总 | ${new Date().toLocaleString('zh-CN')}`);
+// ---------- 主流程 ----------
 
-  const data = loadTodayTweets();
-  if (data.length === 0) {
+async function main() {
+  const banner = DRY_RUN ? '📊 生成每日汇总 (DRY-RUN)' : '📊 生成每日汇总';
+  console.log(`${banner} | ${new Date().toLocaleString('zh-CN')}`);
+
+  const groups = loadTodayTweets();
+  if (groups.length === 0) {
     console.log('今日无推文数据');
-    await notify.send('📊 AI 大佬日报：今日暂无新推文数据', 'AI 日报');
+    if (!NO_NOTIFY) {
+      await notify.send('📊 AI 大佬日报：今日暂无新推文数据', 'AI 日报');
+    }
     return;
   }
 
-  console.log(`找到 ${data.length} 位大佬的推文数据`);
+  console.log(`找到 ${groups.length} 位大佬的推文数据`);
+  await backfillEnrich(groups);
 
-  // 生成 Markdown 报告
-  const report = generateReport(data);
   const date = new Date().toISOString().split('T')[0];
-  const reportPath = path.join(REPORT_DIR, `${date}.md`);
+  const totalTweets = groups.reduce((s, g) => s + g.tweets.length, 0);
+  console.log(`🤖 调用 LLM 生成结构化日报（共 ${totalTweets} 条推文）...`);
+
+  let report;
+  try {
+    report = await insights.aggregateDailyInsights(groups, date, { dry_run: DRY_RUN });
+  } catch (e) {
+    console.error('日报生成失败：', e.message);
+    process.exit(1);
+  }
+
+  const reportPath = path.join(DAILY_DIR, `${date}.md`);
   fs.writeFileSync(reportPath, report);
-  console.log(`✅ 报告已保存: ${reportPath}`);
+  console.log(`✅ 日报已保存: ${reportPath}`);
 
-  // 推送飞书摘要
-  const summary = generateFeishuSummary(data);
-  await notify.send(summary, 'AI 大佬日报');
-
-  console.log('✅ 飞书通知已发送');
+  // 飞书简短摘要
+  const summary = buildFeishuSummary(date, groups);
+  if (!NO_NOTIFY) {
+    await notify.send(summary, 'AI 大佬日报');
+    console.log('✅ 飞书通知已发送');
+  } else {
+    console.log('\n--- 飞书摘要预览（NO_NOTIFY=1）---\n' + summary);
+    console.log('\n--- 日报全文预览 ---\n' + report.slice(0, 800) + '...');
+  }
 }
 
-main().catch(console.error);
+if (require.main === module) {
+  main().catch(console.error);
+} else {
+  module.exports = { loadTodayTweets, buildFeishuSummary };
+}

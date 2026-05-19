@@ -1,14 +1,34 @@
-# Twitter AI 大佬监控系统
+# Twitter AI 大佬监控系统 — 带 LLM 洞察 + 三层记忆
 
-自动监控 AI 领域大佬的 Twitter/X 动态，实时飞书通知 + 每日汇总报告。
+自动监控 9 位 AI 领域大佬的 Twitter/X 动态，**用 MiniMax LLM 逐条提炼洞察**，飞书通知 + 每日 LLM 日报 + 每周知识蒸馏。目标：从"资讯搬运工"升级为"个人 AI 分析师 + 第二大脑"。
 
-## 功能
+## 三层记忆架构
 
-- 🔍 每 30 分钟自动抓取 9 位 AI 大佬最新推文
-- 🚨 重要推文实时推送飞书通知（lark-cli + Webhook 双通道）
-- 📊 每天早 8 点生成 AI 洞见日报（热门话题、Top 推文、按人物分组）
-- 🎯 智能重要性评分（关键词匹配 + 互动量分析）
-- 📝 历史数据持久化，自动清理过期数据
+| 层级 | 时效 | 存储 | 谁维护 |
+|------|------|------|--------|
+| **短期** | 7 天滚动 | `data/{handle}.json` | `monitor.js` |
+| **中期** | 永久 | `reports/daily/YYYY-MM-DD.md` | `daily-summary.js` |
+| **长期** | 滚动重写 | `memory/long-term/core-insights.md` | `weekly-distill.js` |
+
+**长期记忆有"反馈机制"**：周度蒸馏 prompt 会强制 LLM 输出"本周哪些信号挑战了之前的判断"，避免回音室效应。
+
+## 功能流程
+
+```
+   每 12 小时               每天 18:30           每周一 09:00
+       ↓                       ↓                    ↓
+   monitor.js  →→→→→→  daily-summary.js  →→→  weekly-distill.js
+       │                       │                    │
+       │                       │                    │
+   每条新推文                所有当日推文          7 份日报 + 旧 core
+   调 LLM 提洞察            喂 LLM 写日报         喂 LLM 写新 core
+       ↓                       ↓                    ↓
+   data/*.json           reports/daily/        memory/long-term/
+   (含 llm_insight)      *.md                  core-insights.md
+       ↓                       ↓                    ↓
+   飞书：高 novelty       飞书：Top 5 信号     飞书：本周新观点
+   推文摘要               + 日报路径            + 蒸馏路径
+```
 
 ## 监控目标
 
@@ -24,110 +44,161 @@
 | Sam Altman | @sama | OpenAI、GPT、AGI |
 | Ilya Sutskever | @ilyasut | 超级智能、AI 安全 |
 
-在 `config.json` 的 `targets` 数组中添加新条目即可扩展。
+在 `config.json` 的 `targets` 添加新条目即可扩展。
 
 ## 快速开始
 
-### 前置条件
+### 1. 前置条件
 
 - Node.js 22+
-- Chrome 浏览器已登录 x.com，远程调试已启用（端口 9222）
+- Chrome 远程调试已启用，已登录 x.com（端口 9222）
 - CDP Proxy 运行中（端口 3456）
-- lark-cli 已安装并登录（`npm i -g @larksuite/cli && lark-cli auth login --recommend`）
+- lark-cli 已登录（`lark-cli auth login --recommend`）
 
-### 1. 配置飞书通知
+### 2. 配置 MiniMax API Key
 
-编辑 `config.json`，填入飞书群 chat_id：
-
-```json
-{
-  "feishu": {
-    "enabled": true,
-    "chat_id": "oc_你的群聊ID",
-    "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/你的webhook",
-    "use_lark_cli": true,
-    "as": "bot"
-  }
-}
+```bash
+mkdir -p ~/.config/twitter-monitor
+chmod 700 ~/.config/twitter-monitor
+cat > ~/.config/twitter-monitor/.env <<EOF
+MINIMAX_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+EOF
+chmod 600 ~/.config/twitter-monitor/.env
 ```
 
-chat_id 和 webhook_url 至少配一个。lark-cli 优先，Webhook 作为降级。
+去 [MiniMax 控制台](https://platform.minimaxi.com/user-center/basic-information/interface-key) 申请 key。`MiniMax-M2.7-highspeed` 用于单条推文提炼，`MiniMax-M2.7` 用于日报/周报聚合。
 
-### 2. 安装定时任务
+⚠️ Key 永远不写进仓库。`.gitignore` 已禁止提交 `.env`。
+
+### 3. 健康检查
+
+```bash
+./scripts/setup-cron.sh status   # 检查 Chrome / CDP Proxy / lark-cli / API key
+./scripts/setup-cron.sh ping     # 真实调用一次 MiniMax，确认配额可用
+```
+
+### 4. 配置飞书通知
+
+编辑 `config.json` 的 `feishu` 段，填 `chat_id` 或 `webhook_url`，至少一个。
+
+### 5. 安装定时任务
 
 ```bash
 ./scripts/setup-cron.sh install
 ```
 
-这会配置：
-- 每 30 分钟运行监控
-- 每天 08:00 生成日报
-- 每天 00:00 清理旧日志
+调度：
+- 每天 08:00 / 20:00：监控（含 LLM 洞察提取）
+- 每天 18:30：日报（LLM 生成结构化中期记忆）
+- 每周一 09:00：周度蒸馏（LLM 更新长期记忆）
+- 每天 00:00：清理 7 天前的日志
 
-### 3. 手动运行
+### 6. 手动运行
 
 ```bash
-# 立即运行一次监控
+# 立即抓取一次 + LLM 提炼洞察 + 推飞书
 node scripts/monitor.js
 
-# 立即生成日报
+# 立即生成今日日报
 node scripts/daily-summary.js
 
-# 测试飞书通知
-node scripts/notify.js
+# 立即蒸馏过去 7 天
+node scripts/weekly-distill.js
 
-# 查看系统状态
-./scripts/setup-cron.sh status
+# 蒸馏过去 14 天
+node scripts/weekly-distill.js --days 14
+```
 
-# 诊断 Twitter 登录
-node scripts/diagnose.js
+### 7. 调试模式
+
+```bash
+# 不调用真实 LLM（mock 输出，省 token）
+LLM_DRY_RUN=1 node scripts/monitor.js
+
+# 不推送飞书（在终端预览消息）
+NO_NOTIFY=1 node scripts/daily-summary.js
+
+# 两者结合：完整离线测试
+LLM_DRY_RUN=1 NO_NOTIFY=1 node scripts/weekly-distill.js
 ```
 
 ## 项目结构
 
 ```
 twitter-monitor/
-├── config.json              # 配置文件（监控目标、飞书、调度）
+├── config.json
+├── .env.example                # API key 模板（仓库内）
 ├── scripts/
-│   ├── monitor.js           # 核心监控脚本（CDP 抓取 + 飞书通知）
-│   ├── daily-summary.js     # 每日汇总报告生成
-│   ├── notify.js            # 飞书通知模块
-│   ├── setup-cron.sh        # cron 定时任务管理
-│   ├── diagnose.js          # Twitter 登录诊断
-│   ├── start-monitor.sh     # 手动启动脚本
-│   └── view-report.sh       # 查看报告
-├── data/                    # 推文历史数据（自动管理）
-├── reports/                 # 每日报告（YYYY-MM-DD.md）
-└── logs/                    # 运行日志
+│   ├── monitor.js              # 抓推文 + LLM 单条洞察
+│   ├── daily-summary.js        # LLM 日报聚合
+│   ├── weekly-distill.js       # LLM 周度蒸馏
+│   ├── llm.js                  # MiniMax 客户端（重试/降级/<think> 剥离）
+│   ├── insights.js             # 三个核心 prompt
+│   ├── notify.js               # 飞书通知（lark-cli + Webhook 双通道）
+│   ├── setup-cron.sh           # cron 管理 + 健康检查 + ping
+│   └── diagnose.js             # 排查 Twitter 登录
+├── data/                       # 短期：原始推文 + llm_insight 缓存（7 天滚动）
+├── reports/
+│   ├── daily/                  # 中期：每日报告
+│   └── weekly/                 # 周度：蒸馏快照（不可变）
+├── memory/
+│   ├── README.md               # 记忆系统说明
+│   ├── long-term/
+│   │   └── core-insights.md    # 长期：活文档（每周重写）
+│   └── archive/                # 长期记忆历史版本归档
+└── logs/
+    ├── monitor.log
+    ├── summary.log
+    ├── weekly.log
+    └── llm.log                 # 每次 LLM 调用的耗时/用量
 ```
 
-## 添加新的监控目标
+## 单条推文洞察 Schema
 
-编辑 `config.json`，在 `targets` 数组中添加：
+每条推文经 LLM 处理后得到：
 
 ```json
 {
-  "handle": "用户名",
-  "name": "显示名称",
-  "url": "https://x.com/用户名",
-  "keywords": ["关键词1", "关键词2"]
+  "one_liner":   "≤40 字 核心论点（不复述原文）",
+  "why_matters": "≤80 字 为什么值得关注",
+  "tags":        ["#GPT5", "#开源"],
+  "type":        "announcement | insight | opinion | research | personal | other",
+  "novelty":     0-10,
+  "skip":        false,
+  "skip_reason": ""
 }
 ```
 
-## 重要性评分规则
+- `skip=true` 的不会推送飞书，源头降噪
+- `novelty` 是飞书消息的主要排序维度（不只是看互动量）
+- 极短推文（清理 URL 后 <15 字符）自动 skip，不浪费 token
 
-| 因素 | 分值 |
+## 成本估算（按 MiniMax 国内价格，仅供参考）
+
+假设 9 个人 × 每天 12 条新推文（平均）= 100 条/天：
+
+- 单条提炼（M2.7-highspeed）：100 × ~500 token = 5 万 token/天
+- 日报聚合（M2.7）：约 2 万 token/天
+- 周报蒸馏（M2.7）：约 5 万 token/周
+
+按 highspeed 输入 0.4 元/百万 token、quality 1 元/百万 token 估算：**约 0.05 - 0.2 元/天**。订阅式 Token Plan Plus 套餐基本不会触底。
+
+## 故障与降级
+
+每个 LLM 调用都有 fallback：
+
+| 场景 | 行为 |
 |------|------|
-| 每个关键词匹配 | +10 |
-| 互动量 > 1000 | +15 |
-| 互动量 > 500 | +10 |
-| 互动量 > 100 | +5 |
-| 内容 > 200 字符 | +2 |
-
-评分 ≥ 15 分触发飞书实时通知。
+| 余额不足（错误码 1008） | 单条提取降级到截首句模板，监控继续 |
+| 套餐限流（错误码 2056） | 单条提取降级；日报降级模板；周报抛错让 cron 看到 |
+| 网络/超时 | 3 次指数退避；最终失败按上面降级 |
+| LLM 输出非 JSON | 让 LLM 重试一次；再失败用 fallback |
+| `monitor.js` 抓不到 | 记日志，不影响其他人 |
 
 ## 注意事项
 
-- 建议监控间隔 ≥ 30 分钟，避免触发平台限制
-- Chrome 需保持运行并已登录 x.com
-- lark-cli token 过期时会自动降级到 Webhook
+- 监控间隔不要 < 30 分钟（X 平台限制）
+- Chrome 必须保持运行 + 登录 x.com
+- lark-cli token 过期会自动降级到 Webhook
+- `core-insights.md` 可以**手工编辑**（加批注用 `> ` 引用块），下次蒸馏 LLM 会保留你的批注作为输入
+- 若想完全重建长期记忆：删 `memory/long-term/core-insights.md`，下次 weekly-distill 当作首次生成

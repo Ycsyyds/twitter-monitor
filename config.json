@@ -68,15 +68,32 @@
   "feishu": {
     "enabled": true,
     "chat_id": "",
-    "webhook_url": "",
+    "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/6aa8aedd-9421-415e-83d3-64627d16e60f",
     "use_lark_cli": true,
     "as": "bot"
+  },
+  "llm": {
+    "enabled": true,
+    "provider": "minimax",
+    "base_url": "https://api.minimaxi.com/anthropic/v1",
+    "model_quality": "MiniMax-M2.7",
+    "model_fast": "MiniMax-M2.7",
+    "timeout_ms": 60000,
+    "max_retries": 3,
+    "temperature": 0.3,
+    "max_tokens": 1024,
+    "_comment": "Token Plan Key 走 Anthropic 兼容端点；highspeed 高峰期受限，默认用 M2.7"
   },
   "daily_summary": {
     "enabled": true,
     "hour": 18.5,
     "top_n_per_user": 3,
     "report_dir": "reports"
+  },
+  "weekly_distill": {
+    "enabled": true,
+    "days": 7,
+    "_comment": "周一上午 9:00 由 cron 触发，蒸馏过去 days 天的日报"
   },
   "storage": {
     "tweet_history_days": 7,

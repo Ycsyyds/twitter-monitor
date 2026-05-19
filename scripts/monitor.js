@@ -1,15 +1,25 @@
 #!/usr/bin/env node
 
 /**
- * Twitter AI 大佬监控脚本
- * 每12小时运行一次，抓取所有目标的新推文，汇总为一条飞书消息推送
- * 无新动态则不推送
+ * Twitter AI 大佬监控脚本（LLM-enriched 版本）
+ *
+ * 流程：
+ *   1. 通过 CDP Proxy 抓取每个目标的最新推文
+ *   2. 找到新推文（按 url 去重）
+ *   3. 逐条调用 MiniMax LLM 抽取结构化洞察（one_liner / why_matters / tags / novelty / skip）
+ *   4. 写入 data/{handle}.json 持久化（含 llm_insight 缓存）
+ *   5. 构造飞书消息（按 novelty 排序，skip=true 的不展示）
+ *
+ * 环境变量：
+ *   LLM_DRY_RUN=1  使用 mock LLM 输出，不消耗 token（用于测试）
+ *   NO_NOTIFY=1    不推送飞书（用于本地调试）
  */
 
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const notify = require('./notify');
+const insights = require('./insights');
 
 const PROXY_HOST = 'localhost';
 const PROXY_PORT = 3456;
@@ -17,10 +27,15 @@ const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 
+const DRY_RUN = !!process.env.LLM_DRY_RUN;
+const NO_NOTIFY = !!process.env.NO_NOTIFY;
+
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(path.join(__dirname, '..', 'logs'), { recursive: true });
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ---------- CDP Proxy ----------
 
 function proxyRequest(endpoint, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
@@ -39,6 +54,8 @@ function proxyRequest(endpoint, method = 'GET', body = null) {
   });
 }
 
+// ---------- 数据持久化 ----------
+
 function loadHistory(handle) {
   const file = path.join(DATA_DIR, `${handle}.json`);
   if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -47,11 +64,21 @@ function loadHistory(handle) {
 
 function saveHistory(handle, data) {
   const file = path.join(DATA_DIR, `${handle}.json`);
-  const cutoff = Date.now() - config.storage.tweet_history_days * 86400000;
-  data.tweets = data.tweets.filter(t => !t.time || new Date(t.time).getTime() > cutoff);
+  const cutoff7d = Date.now() - config.storage.tweet_history_days * 86400000;
+  const cutoff14d = Date.now() - 14 * 86400000;
+  data.tweets = data.tweets.filter(t => {
+    if (!t.time) return true; // 无时间戳的保留
+    const ts = new Date(t.time).getTime();
+    // 有 llm_insight 的推文保留 14 天（给日报/周报消费）
+    if (t.llm_insight) return ts > cutoff14d;
+    // 无 insight 的保留 7 天
+    return ts > cutoff7d;
+  });
   data.lastChecked = new Date().toISOString();
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
+
+// ---------- 抓取 ----------
 
 async function extractTweets(targetId, maxTweets) {
   const script = `
@@ -77,17 +104,28 @@ async function extractTweets(targetId, maxTweets) {
   return JSON.parse(result.value);
 }
 
-function analyzeImportance(tweet, keywords) {
-  const text = tweet.text.toLowerCase();
-  let score = 0;
-  keywords.forEach(kw => { if (text.includes(kw.toLowerCase())) score += 10; });
-  const total = tweet.engagement.likes + tweet.engagement.retweets + tweet.engagement.replies;
-  if (total > 1000) score += 15;
-  else if (total > 500) score += 10;
-  else if (total > 100) score += 5;
-  if (tweet.text.length > 200) score += 2;
-  return { score, totalEngagement: total };
+// ---------- LLM 富化 ----------
+
+/**
+ * 给一组新推文逐条调用 LLM 提洞察（串行，避免触发 rate limit）
+ * 失败的推文会回退到 fallback insight，不会让流程挂掉
+ */
+async function enrichTweetsWithLLM(tweets, target) {
+  for (let i = 0; i < tweets.length; i++) {
+    const t = tweets[i];
+    if (t.llm_insight) continue;  // 已有缓存（理论上不会，但保险）
+    process.stdout.write(`  💭 LLM ${i + 1}/${tweets.length}... `);
+    const t0 = Date.now();
+    t.llm_insight = await insights.extractTweetInsight(t, target, { dry_run: DRY_RUN });
+    const ms = Date.now() - t0;
+    const flag = t.llm_insight._fallback ? '降级' : (t.llm_insight.skip ? 'skip' : 'ok');
+    console.log(`${flag} (${ms}ms) novelty=${t.llm_insight.novelty}`);
+    // 串行 + 小延迟，对 rate limit 友好
+    if (!DRY_RUN && i < tweets.length - 1) await sleep(300);
+  }
 }
+
+// ---------- 监控单个目标 ----------
 
 async function monitorTarget(target) {
   console.log(`\n🔍 ${target.name} (@${target.handle})`);
@@ -118,7 +156,9 @@ async function monitorTarget(target) {
 
     if (newTweets.length > 0) {
       console.log(`  ✨ ${newTweets.length} 条新推文`);
-      for (const t of newTweets) t._analysis = analyzeImportance(t, target.keywords);
+      // LLM enrich：逐条提洞察
+      await enrichTweetsWithLLM(newTweets, target);
+      // 持久化（含 llm_insight 缓存，下次不再重复调）
       history.tweets = [...newTweets, ...history.tweets];
       saveHistory(target.handle, history);
     } else {
@@ -134,44 +174,10 @@ async function monitorTarget(target) {
   }
 }
 
-// --- 话题标签与摘要 ---
-
-const TOPIC_MAP = [
-  // [匹配词(小写), 显示标签]
-  ['chatgpt', '#ChatGPT'], ['gpt-4', '#GPT4'], ['gpt-5', '#GPT5'], ['gpt', '#GPT'],
-  ['openai', '#OpenAI'], ['claude', '#Claude'], ['gemini', '#Gemini'], ['llama', '#LLaMA'],
-  ['deepseek', '#DeepSeek'], ['mistral', '#Mistral'], ['grok', '#Grok'],
-  ['llm', '#LLM'], ['transformer', '#Transformer'], ['diffusion', '#Diffusion'],
-  ['agi', '#AGI'], ['superintelligence', '#超级智能'], ['alignment', '#AI对齐'],
-  ['safety', '#AI安全'], ['regulation', '#AI监管'],
-  ['agent', '#AI智能体'], ['mcp', '#MCP'], ['rag', '#RAG'], ['fine-tun', '#微调'],
-  ['multimodal', '#多模态'], ['vision', '#视觉'], ['image', '#图像生成'],
-  ['robot', '#机器人'], ['embodied', '#具身智能'],
-  ['open source', '#开源'], ['open-source', '#开源'], ['opensource', '#开源'],
-  ['benchmark', '#评测'], ['scaling', '#Scaling'], ['reasoning', '#推理'],
-  ['training', '#训练'], ['inference', '#推理优化'],
-  ['deep research', '#DeepResearch'], ['alphafold', '#AlphaFold'],
-  ['foundation model', '#基础模型'], ['neural', '#神经网络'],
-  ['reinforcement', '#强化学习'], ['rlhf', '#RLHF'],
-  ['launch', '#发布'], ['releasing', '#发布'], ['announcing', '#发布'], ['introducing', '#发布'],
-  ['paper', '#论文'], ['research', '#研究'],
-];
-
-function extractTopicTags(text) {
-  const lower = text.toLowerCase();
-  const tags = [];
-  const seen = new Set();
-  for (const [kw, tag] of TOPIC_MAP) {
-    if (lower.includes(kw) && !seen.has(tag)) {
-      seen.add(tag);
-      tags.push(tag);
-    }
-  }
-  return tags.slice(0, 4);
-}
+// ---------- 飞书消息构造（基于 LLM 洞察） ----------
 
 function getHeatIcon(engagement) {
-  const total = engagement.likes + engagement.retweets + engagement.replies;
+  const total = (engagement.likes || 0) + (engagement.retweets || 0) + (engagement.replies || 0);
   if (total > 10000) return '🔥🔥🔥';
   if (total > 5000) return '🔥🔥';
   if (total > 1000) return '🔥';
@@ -179,18 +185,9 @@ function getHeatIcon(engagement) {
   return '';
 }
 
-function summarizeTweet(text) {
-  // 取第一句作为核心摘要
-  let summary = text.replace(/https?:\/\/\S+/g, '').trim();
-  // 按句号、换行、感叹号分割取第一句
-  const first = summary.split(/[.\n!?。！？]/)[0].trim();
-  if (first.length > 10 && first.length < 200) summary = first;
-  if (summary.length > 120) summary = summary.substring(0, 120) + '...';
-  return summary;
-}
-
 function formatEngagement(eng) {
   function fmt(n) {
+    n = n || 0;
     if (n >= 10000) return (n / 1000).toFixed(0) + 'K';
     if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
     return String(n);
@@ -198,46 +195,81 @@ function formatEngagement(eng) {
   return '👍' + fmt(eng.likes) + ' 🔄' + fmt(eng.retweets) + ' 💬' + fmt(eng.replies);
 }
 
+/**
+ * 综合排序分：novelty 是核心，互动量作补充
+ * novelty 0-10 ⇒ 100 分；互动量 log 缩放后做加成
+ */
+function scoreInsight(t) {
+  const eng = t.engagement || {};
+  const total = (eng.likes || 0) + (eng.retweets || 0) + (eng.replies || 0);
+  const noveltyScore = (t.llm_insight?.novelty ?? 3) * 10;
+  const engScore = total > 0 ? Math.min(30, Math.log10(total + 1) * 8) : 0;
+  return noveltyScore + engScore;
+}
+
 function buildSummaryMessage(results) {
-  var withUpdates = results.filter(function(r) { return r.newTweets.length > 0; });
+  const withUpdates = results.filter(r => (r.newTweets || []).length > 0);
   if (withUpdates.length === 0) return null;
 
-  var totalNew = withUpdates.reduce(function(s, r) { return s + r.newTweets.length; }, 0);
-  var msg = '📡 **AI 大佬动态速递** | ' + new Date().toLocaleString('zh-CN') + '\n';
-  msg += '> ' + withUpdates.length + ' 人更新，共 ' + totalNew + ' 条新推文\n\n';
+  // 全局过滤：丢掉 skip=true 的
+  let totalNew = 0;
+  let totalShown = 0;
+  for (const r of withUpdates) {
+    totalNew += r.newTweets.length;
+    r._displayTweets = r.newTweets.filter(t => !t.llm_insight?.skip);
+    totalShown += r._displayTweets.length;
+  }
 
-  for (var i = 0; i < withUpdates.length; i++) {
-    var r = withUpdates[i];
-    // 按重要性排序
-    var sorted = r.newTweets.slice().sort(function(a, b) {
-      var sa = (a._analysis && a._analysis.score) || 0;
-      var sb = (b._analysis && b._analysis.score) || 0;
-      return sb - sa;
-    });
+  // 如果所有推文都被 skip 了，仍然推一条简短通知（让用户知道系统在跑）
+  if (totalShown === 0) {
+    return `📡 **AI 大佬动态速递** | ${new Date().toLocaleString('zh-CN')}\n\n` +
+           `> ${withUpdates.length} 人共更新 ${totalNew} 条，但均被判断为低信号（个人/吃瓜/广告等），不展开。`;
+  }
 
-    // 收集所有推文的话题标签
-    var allTags = [];
-    var tagSeen = {};
-    for (var j = 0; j < sorted.length; j++) {
-      var tags = extractTopicTags(sorted[j].text);
-      for (var k = 0; k < tags.length; k++) {
-        if (!tagSeen[tags[k]]) { tagSeen[tags[k]] = true; allTags.push(tags[k]); }
-      }
+  // 按"最高 novelty"对人物排序，让信号强的人排在前面
+  withUpdates.sort((a, b) => {
+    const ma = Math.max(...a._displayTweets.map(t => t.llm_insight?.novelty ?? 0), 0);
+    const mb = Math.max(...b._displayTweets.map(t => t.llm_insight?.novelty ?? 0), 0);
+    return mb - ma;
+  });
+
+  let msg = `📡 **AI 大佬动态速递** | ${new Date().toLocaleString('zh-CN')}\n`;
+  msg += `> ${withUpdates.length} 人更新 / 共 ${totalNew} 条 / 展示 ${totalShown} 条高信号\n\n`;
+
+  for (const r of withUpdates) {
+    if (r._displayTweets.length === 0) continue;
+
+    // 该人物推文按综合分降序
+    const sorted = r._displayTweets.slice().sort((a, b) => scoreInsight(b) - scoreInsight(a));
+
+    // 该人物的 tags（去重，取 LLM 输出）
+    const tagSet = new Set();
+    for (const t of sorted) {
+      for (const tag of (t.llm_insight?.tags || [])) tagSet.add(tag);
     }
-    var tagStr = allTags.slice(0, 5).join(' ');
+    const tagStr = [...tagSet].slice(0, 5).join(' ');
 
-    var heat = getHeatIcon(sorted[0].engagement);
-    msg += heat + (heat ? ' ' : '') + '**' + r.name + '** (@' + r.handle + ') — ' + r.newTweets.length + ' 条新推文\n';
+    const heat = getHeatIcon(sorted[0].engagement);
+    msg += `${heat}${heat ? ' ' : ''}**${r.name}** (@${r.handle}) — ${sorted.length} 条新推文\n`;
     if (tagStr) msg += tagStr + '\n';
 
-    // 展示 top 3 推文摘要
-    var showCount = Math.min(3, sorted.length);
-    for (var j = 0; j < showCount; j++) {
-      var t = sorted[j];
-      var summary = summarizeTweet(t.text);
-      var heat2 = getHeatIcon(t.engagement);
-      msg += '→ ' + summary + (heat2 ? ' ' + heat2 : '') + '\n';
-      msg += '   ' + formatEngagement(t.engagement) + ' [原文](' + t.url + ')\n';
+    // 展示 top 3
+    const showCount = Math.min(3, sorted.length);
+    for (let j = 0; j < showCount; j++) {
+      const t = sorted[j];
+      const ins = t.llm_insight || {};
+      const heat2 = getHeatIcon(t.engagement);
+      const novelty = ins.novelty ?? '?';
+
+      msg += `→ **${ins.one_liner || '(无摘要)'}** ${heat2 ? heat2 + ' ' : ''}[novelty:${novelty}]\n`;
+      if (ins.why_matters && ins.why_matters !== '无明确行业信号') {
+        msg += `  💡 ${ins.why_matters}\n`;
+      }
+      msg += `  ${formatEngagement(t.engagement)} [原文](${t.url})\n`;
+    }
+
+    if (sorted.length > showCount) {
+      msg += `  ...另有 ${sorted.length - showCount} 条\n`;
     }
     msg += '\n';
   }
@@ -245,8 +277,11 @@ function buildSummaryMessage(results) {
   return msg;
 }
 
+// ---------- 主流程 ----------
+
 async function main() {
-  console.log(`🎯 Twitter AI 监控 | ${new Date().toLocaleString('zh-CN')}`);
+  const banner = DRY_RUN ? '🎯 Twitter AI 监控 (DRY-RUN 模式)' : '🎯 Twitter AI 监控';
+  console.log(`${banner} | ${new Date().toLocaleString('zh-CN')}`);
 
   const results = [];
   for (const target of config.targets) {
@@ -255,16 +290,23 @@ async function main() {
   }
 
   const ok = results.filter(r => r.success).length;
-  const totalNew = results.reduce((s, r) => s + r.newTweets.length, 0);
+  const totalNew = results.reduce((s, r) => s + (r.newTweets || []).length, 0);
   console.log(`\n📋 完成: ${ok}/${results.length} 成功, ${totalNew} 条新推文`);
 
   const msg = buildSummaryMessage(results);
-  if (msg) {
+  if (msg && !NO_NOTIFY) {
     await notify.send(msg, 'AI 大佬动态更新');
     console.log('✅ 飞书汇总通知已发送');
+  } else if (msg && NO_NOTIFY) {
+    console.log('\n--- 飞书消息预览（NO_NOTIFY=1，未发送）---\n' + msg);
   } else {
     console.log('ℹ️ 无新动态，不推送');
   }
 }
 
-main().catch(console.error);
+// 仅在直接运行时启动 main；被 require 时仅暴露内部函数便于测试
+if (require.main === module) {
+  main().catch(console.error);
+} else {
+  module.exports = { buildSummaryMessage, scoreInsight, getHeatIcon, formatEngagement, enrichTweetsWithLLM };
+}

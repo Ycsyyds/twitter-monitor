@@ -2,5 +2,12 @@ node_modules/
 data/
 logs/
 reports/
+memory/archive/
 /tmp/
 *.log
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+!.env.example
