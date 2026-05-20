@@ -101,7 +101,10 @@ async function extractTweets(targetId, maxTweets) {
     })()
   `;
   const result = await proxyRequest(`/eval?target=${targetId}`, 'POST', script);
-  return JSON.parse(result.value);
+  const raw = JSON.parse(result.value);
+  // 按 URL 去重（页面滚动时同一条推文可能出现多次）
+  const seen = new Set();
+  return raw.filter(t => { if (seen.has(t.url)) return false; seen.add(t.url); return true; });
 }
 
 // ---------- LLM 富化 ----------
