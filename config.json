@@ -53,6 +53,48 @@
       "name": "Ilya Sutskever",
       "url": "https://x.com/ilyasut",
       "keywords": ["AI", "deep learning", "superintelligence", "safety", "SSI"]
+    },
+    {
+      "handle": "AnthropicAI",
+      "name": "Anthropic",
+      "url": "https://x.com/AnthropicAI",
+      "keywords": ["Claude", "Anthropic", "release", "safety", "model"]
+    },
+    {
+      "handle": "ClaudeDevs",
+      "name": "Claude Developers",
+      "url": "https://x.com/ClaudeDevs",
+      "keywords": ["Claude Code", "release", "agent", "coding", "update"]
+    },
+    {
+      "handle": "OpenAI",
+      "name": "OpenAI",
+      "url": "https://x.com/OpenAI",
+      "keywords": ["GPT", "OpenAI", "release", "AGI", "model"]
+    },
+    {
+      "handle": "OpenAIDevs",
+      "name": "OpenAI Developers",
+      "url": "https://x.com/OpenAIDevs",
+      "keywords": ["API", "Codex", "developer", "GPT", "release"]
+    },
+    {
+      "handle": "trq212",
+      "name": "Thariq Shihipar",
+      "url": "https://x.com/trq212",
+      "keywords": ["Claude Code", "agent", "coding", "prompt", "engineering"]
+    },
+    {
+      "handle": "embirico",
+      "name": "Alexander Embiricos",
+      "url": "https://x.com/embirico",
+      "keywords": ["Codex", "coding agent", "OpenAI", "developer"]
+    },
+    {
+      "handle": "dotey",
+      "name": "宝玉",
+      "url": "https://x.com/dotey",
+      "keywords": ["AI", "prompt", "翻译", "LLM", "Claude", "GPT"]
     }
   ],
   "monitoring": {

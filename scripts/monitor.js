@@ -62,6 +62,18 @@ function loadHistory(handle) {
   return { tweets: [], lastChecked: null };
 }
 
+// 文本归一化签名：用于跨账号"同内容不同 URL"去重（如多个官方号同时宣布同一发布）。
+// 去 URL、去 @提及/#话题、去标点空白、转小写，取前 60 字。
+function textSignature(text) {
+  if (!text) return '';
+  const norm = text
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/[@#]\w+/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '')
+    .toLowerCase();
+  return norm.slice(0, 60);
+}
+
 function saveHistory(handle, data) {
   const file = path.join(DATA_DIR, `${handle}.json`);
   const cutoff7d = Date.now() - config.storage.tweet_history_days * 86400000;
@@ -95,7 +107,11 @@ async function extractTweets(targetId, maxTweets) {
         const url = linkEl ? linkEl.href : '';
         const get = id => { const e = el.querySelector('[data-testid="'+id+'"]'); return e ? (e.textContent||'0') : '0'; };
         function parse(s) { const m=s.match(/([\\.\\d]+)([KMB]?)/); if(!m)return 0; const n=parseFloat(m[1]),x=m[2]; return Math.round(x==='K'?n*1e3:x==='M'?n*1e6:x==='B'?n*1e9:n); }
-        if (text && url) tweets.push({ text: text.substring(0,500), time, url, engagement: { likes: parse(get('like')), retweets: parse(get('retweet')), replies: parse(get('reply')) }});
+        const scEl = el.querySelector('[data-testid="socialContext"]');
+        const scText = scEl ? scEl.innerText : '';
+        const pinned = /pinned|置顶/i.test(scText);
+        const repost = /repost|retweet|转推|转发/i.test(scText);
+        if (text && url) tweets.push({ text: text.substring(0,500), time, url, pinned, repost, engagement: { likes: parse(get('like')), retweets: parse(get('retweet')), replies: parse(get('reply')) }});
       }
       return JSON.stringify(tweets);
     })()
@@ -104,7 +120,20 @@ async function extractTweets(targetId, maxTweets) {
   const raw = JSON.parse(result.value);
   // 按 URL 去重（页面滚动时同一条推文可能出现多次）
   const seen = new Set();
-  return raw.filter(t => { if (seen.has(t.url)) return false; seen.add(t.url); return true; });
+  const deduped = raw.filter(t => { if (seen.has(t.url)) return false; seen.add(t.url); return true; });
+  // 丢弃"陈旧的置顶推文"：置顶推文长期挂在主页顶部，首次抓取会被误判为新推文。
+  // 只保留发布时间在保留窗口内的置顶推文（真·近期且被作者置顶的才算新动态）。
+  const pinnedCutoff = Date.now() - (config.storage.tweet_history_days || 7) * 86400000;
+  return deduped.filter(t => {
+    if (!t.pinned) return true;
+    if (!t.time) return false; // 置顶且无时间戳：丢弃（几乎必为陈旧锚定推文）
+    const ts = new Date(t.time).getTime();
+    if (ts <= pinnedCutoff) {
+      console.log(`  📌 跳过陈旧置顶: ${t.time} ${t.text.slice(0, 40).replace(/\n/g, ' ')}`);
+      return false;
+    }
+    return true;
+  });
 }
 
 // ---------- LLM 富化 ----------
@@ -130,7 +159,7 @@ async function enrichTweetsWithLLM(tweets, target) {
 
 // ---------- 监控单个目标 ----------
 
-async function monitorTarget(target) {
+async function monitorTarget(target, globalSeen) {
   console.log(`\n🔍 ${target.name} (@${target.handle})`);
   let targetId = null;
   try {
@@ -158,12 +187,37 @@ async function monitorTarget(target) {
     const newTweets = tweets.filter(t => !historyUrls.has(t.url));
 
     if (newTweets.length > 0) {
-      console.log(`  ✨ ${newTweets.length} 条新推文`);
-      // LLM enrich：逐条提洞察
-      await enrichTweetsWithLLM(newTweets, target);
-      // 持久化（含 llm_insight 缓存，下次不再重复调）
-      history.tweets = [...newTweets, ...history.tweets];
+      // 跨账号全局去重：同一条推文（含被转推的原推文）若本轮已被前面的账号处理过，
+      // 这里只做持久化、不再 enrich/不再展示，避免一份日报里重复推同一条。
+      // 两个维度：① URL 完全相同（精确转推）；② 文本签名相同（多账号宣布同一发布，URL 不同）。
+      const fresh = [];
+      const dupes = [];
+      for (const t of newTweets) {
+        const sig = textSignature(t.text);
+        const sigDup = sig.length >= 24 && globalSeen.has('sig:' + sig); // 文本够长才用签名去重，避免误杀短推文
+        if (globalSeen.has(t.url) || sigDup) {
+          dupes.push(t);
+        } else {
+          globalSeen.add(t.url);
+          if (sig.length >= 24) globalSeen.add('sig:' + sig);
+          fresh.push(t);
+        }
+      }
+      if (dupes.length > 0) {
+        console.log(`  ♻️ ${dupes.length} 条跨账号重复（已被本轮其他账号收录，跳过展示）`);
+        for (const t of dupes) {
+          t.llm_insight = { skip: true, skip_reason: '跨账号重复（转推/同源）', novelty: 0, one_liner: '', tags: [], _dedup: true };
+        }
+      }
+      console.log(`  ✨ ${fresh.length} 条新推文（去重后）`);
+      // LLM enrich：仅对去重后的新推文逐条提洞察
+      await enrichTweetsWithLLM(fresh, target);
+      // 持久化（fresh 含 llm_insight 缓存；dupes 标记 skip，下次不再重复处理）
+      history.tweets = [...fresh, ...dupes, ...history.tweets];
       saveHistory(target.handle, history);
+      // 仅 fresh 进入展示
+      await proxyRequest(`/close?target=${targetId}`);
+      return { success: true, name: target.name, handle: target.handle, newTweets: fresh };
     } else {
       console.log('  ✅ 无新推文');
     }
@@ -287,8 +341,9 @@ async function main() {
   console.log(`${banner} | ${new Date().toLocaleString('zh-CN')}`);
 
   const results = [];
+  const globalSeen = new Set(); // 本轮跨账号去重：记录已处理过的推文 URL
   for (const target of config.targets) {
-    results.push(await monitorTarget(target));
+    results.push(await monitorTarget(target, globalSeen));
     await sleep(2000);
   }
 
