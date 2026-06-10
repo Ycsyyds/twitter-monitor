@@ -1,6 +1,6 @@
 # Twitter AI 大佬监控系统 — 带 LLM 洞察 + 三层记忆
 
-自动监控 9 位 AI 领域大佬的 Twitter/X 动态，**用 MiniMax LLM 逐条提炼洞察**，飞书通知 + 每日 LLM 日报 + 每周知识蒸馏。目标：从"资讯搬运工"升级为"个人 AI 分析师 + 第二大脑"。
+自动监控 16 个 AI 领域大佬与官方/团队账号的 Twitter/X 动态，**用 MiniMax LLM 逐条提炼洞察**，飞书通知 + 每日 LLM 日报 + 每周知识蒸馏。目标：从"资讯搬运工"升级为"个人 AI 分析师 + 第二大脑"。
 
 ## 三层记忆架构
 
@@ -43,6 +43,18 @@
 | Demis Hassabis | @demishassabis | DeepMind、AGI、AlphaFold |
 | Sam Altman | @sama | OpenAI、GPT、AGI |
 | Ilya Sutskever | @ilyasut | 超级智能、AI 安全 |
+
+官方 / 团队 / 社区账号：
+
+| 账号 | Handle | 关注领域 |
+|------|--------|----------|
+| Anthropic | @AnthropicAI | Claude 发布、AI 安全、研究 |
+| Claude Developers | @ClaudeDevs | Claude Code、Agent、产品更新 |
+| OpenAI | @OpenAI | GPT、AGI、产品发布 |
+| OpenAI Developers | @OpenAIDevs | API、Codex、开发者更新 |
+| Thariq Shihipar | @trq212 | Claude Code 团队、Agent 工程 |
+| Alexander Embiricos | @embirico | Codex 产品负责人 |
+| 宝玉 | @dotey | AI 中文视角、Prompt、翻译 |
 
 在 `config.json` 的 `targets` 添加新条目即可扩展。
 
@@ -172,6 +184,8 @@ twitter-monitor/
 - `skip=true` 的不会推送飞书，源头降噪
 - `novelty` 是飞书消息的主要排序维度（不只是看互动量）
 - 极短推文（清理 URL 后 <15 字符）自动 skip，不浪费 token
+- **置顶推文过滤**：发布时间超出保留窗口（默认 7 天）的置顶推文会被丢弃，避免长期挂顶的旧推文被反复判为"新动态"重复推送
+- **跨账号去重**：同一轮抓取中，同一条推文（转推同 URL）或同内容（多个官方号发布同一消息，文本签名相同）只展示一次，由名单中靠前的账号"认领"
 
 ## 成本估算（按 MiniMax 国内价格，仅供参考）
 
