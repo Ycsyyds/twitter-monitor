@@ -101,6 +101,12 @@
       "name": "Peter Steinberger",
       "url": "https://x.com/steipete",
       "keywords": ["agentic", "loop", "agent", "Claude Code", "Codex", "coding"]
+    },
+    {
+      "handle": "bcherny",
+      "name": "Boris Cherny",
+      "url": "https://x.com/bcherny",
+      "keywords": ["Claude Code", "loop", "agent", "Anthropic", "coding", "agentic"]
     }
   ],
   "monitoring": {

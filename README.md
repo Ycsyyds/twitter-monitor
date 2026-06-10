@@ -1,6 +1,6 @@
 # Twitter AI 大佬监控系统 — 带 LLM 洞察 + 三层记忆
 
-自动监控 17 个 AI 领域大佬与官方/团队账号的 Twitter/X 动态，**用 MiniMax LLM 逐条提炼洞察**，飞书通知 + 每日 LLM 日报 + 每周知识蒸馏。目标：从"资讯搬运工"升级为"个人 AI 分析师 + 第二大脑"。
+自动监控 18 个 AI 领域大佬与官方/团队账号的 Twitter/X 动态，**用 MiniMax LLM 逐条提炼洞察**，飞书通知 + 每日 LLM 日报 + 每周知识蒸馏。目标：从"资讯搬运工"升级为"个人 AI 分析师 + 第二大脑"。
 
 ## 三层记忆架构
 
@@ -54,6 +54,7 @@
 | OpenAI | @OpenAI | GPT、AGI、产品发布 |
 | OpenAI Developers | @OpenAIDevs | API、Codex、开发者更新 |
 | Thariq Shihipar | @trq212 | Claude Code 团队、Agent 工程 |
+| Boris Cherny | @bcherny | Claude Code 创造者/负责人、loop、Agent |
 | Alexander Embiricos | @embirico | Codex 产品负责人 |
 | 宝玉 | @dotey | AI 中文视角、Prompt、翻译 |
 
