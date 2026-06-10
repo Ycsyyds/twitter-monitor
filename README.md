@@ -1,6 +1,6 @@
 # Twitter AI 大佬监控系统 — 带 LLM 洞察 + 三层记忆
 
-自动监控 16 个 AI 领域大佬与官方/团队账号的 Twitter/X 动态，**用 MiniMax LLM 逐条提炼洞察**，飞书通知 + 每日 LLM 日报 + 每周知识蒸馏。目标：从"资讯搬运工"升级为"个人 AI 分析师 + 第二大脑"。
+自动监控 17 个 AI 领域大佬与官方/团队账号的 Twitter/X 动态，**用 MiniMax LLM 逐条提炼洞察**，飞书通知 + 每日 LLM 日报 + 每周知识蒸馏。目标：从"资讯搬运工"升级为"个人 AI 分析师 + 第二大脑"。
 
 ## 三层记忆架构
 
@@ -43,6 +43,7 @@
 | Demis Hassabis | @demishassabis | DeepMind、AGI、AlphaFold |
 | Sam Altman | @sama | OpenAI、GPT、AGI |
 | Ilya Sutskever | @ilyasut | 超级智能、AI 安全 |
+| Peter Steinberger | @steipete | Agentic 工程、loop、OpenClaw、AI 编码 |
 
 官方 / 团队 / 社区账号：
 

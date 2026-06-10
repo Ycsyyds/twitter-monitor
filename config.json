@@ -95,6 +95,12 @@
       "name": "宝玉",
       "url": "https://x.com/dotey",
       "keywords": ["AI", "prompt", "翻译", "LLM", "Claude", "GPT"]
+    },
+    {
+      "handle": "steipete",
+      "name": "Peter Steinberger",
+      "url": "https://x.com/steipete",
+      "keywords": ["agentic", "loop", "agent", "Claude Code", "Codex", "coding"]
     }
   ],
   "monitoring": {
