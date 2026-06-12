@@ -17,7 +17,7 @@ install_cron() {
 
   # 添加新的
   (crontab -l 2>/dev/null; cat <<EOF
-0 8,20 * * * cd $PROJECT_DIR && $NODE scripts/monitor.js >> logs/monitor.log 2>&1 $CRON_TAG
+0 8,20 * * * cd $PROJECT_DIR && ./scripts/start-cdp-proxy.sh start >> logs/proxy.log 2>&1 && $NODE scripts/monitor.js >> logs/monitor.log 2>&1 $CRON_TAG
 30 18 * * * cd $PROJECT_DIR && $NODE scripts/daily-summary.js >> logs/summary.log 2>&1 $CRON_TAG
 0 9 * * 1  cd $PROJECT_DIR && $NODE scripts/weekly-distill.js >> logs/weekly.log 2>&1 $CRON_TAG
 0 0 * * *  find $PROJECT_DIR/logs -name "*.log" -mtime +7 -delete $CRON_TAG
