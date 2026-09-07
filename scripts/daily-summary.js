@@ -22,6 +22,7 @@ const insights = require('./insights');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
 const DATA_DIR = path.join(__dirname, '..', 'data');
+const HEALTH_PATH = path.join(DATA_DIR, '.health.json');
 const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 const REPORT_BASE = path.join(__dirname, '..', config.daily_summary.report_dir || 'reports');
 const DAILY_DIR = path.join(REPORT_BASE, 'daily');
@@ -113,6 +114,18 @@ function buildFeishuSummary(date, groups) {
   return msg;
 }
 
+// ---------- 抓取链路健康检查 ----------
+
+// ponytail: 只看 monitor.js 最近一次运行是否发生在今天且全员失败（未登录/CDP 未连接）。
+// 不追溯更早的失败历史，也不区分"部分失败"——那种情况仍按"今日无新推文"处理。
+function pipelineDownToday() {
+  try {
+    const h = JSON.parse(fs.readFileSync(HEALTH_PATH, 'utf8'));
+    const sameDay = new Date(h.time).toDateString() === new Date().toDateString();
+    return sameDay && h.total > 0 && h.success === 0;
+  } catch { return false; }
+}
+
 // ---------- 主流程 ----------
 
 async function main() {
@@ -123,7 +136,10 @@ async function main() {
   if (groups.length === 0) {
     console.log('今日无推文数据');
     if (!NO_NOTIFY) {
-      await notify.send('📊 AI 大佬日报：今日暂无新推文数据', 'AI 日报');
+      const msg = pipelineDownToday()
+        ? '⚠️ AI 大佬日报：今日抓取链路异常（Chrome 未登录 / CDP 未连接），并非真的无新推文。请检查 `./scripts/start-cdp-proxy.sh status` 和 Chrome 登录状态。'
+        : '📊 AI 大佬日报：今日暂无新推文数据';
+      await notify.send(msg, 'AI 日报');
     }
     return;
   }
@@ -161,5 +177,5 @@ async function main() {
 if (require.main === module) {
   main().catch(console.error);
 } else {
-  module.exports = { loadTodayTweets, buildFeishuSummary };
+  module.exports = { loadTodayTweets, buildFeishuSummary, pipelineDownToday };
 }

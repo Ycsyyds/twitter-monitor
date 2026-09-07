@@ -6,7 +6,7 @@
  * 流程：
  *   1. 通过 CDP Proxy 抓取每个目标的最新推文
  *   2. 找到新推文（按 url 去重）
- *   3. 逐条调用 MiniMax LLM 抽取结构化洞察（one_liner / why_matters / tags / novelty / skip）
+ *   3. 逐条调用 DeepSeek LLM 抽取结构化洞察（one_liner / why_matters / tags / novelty / skip）
  *   4. 写入 data/{handle}.json 持久化（含 llm_insight 缓存）
  *   5. 构造飞书消息（按 novelty 排序，skip=true 的不展示）
  *
@@ -25,6 +25,7 @@ const PROXY_HOST = 'localhost';
 const PROXY_PORT = 3456;
 const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
 const DATA_DIR = path.join(__dirname, '..', 'data');
+const HEALTH_PATH = path.join(DATA_DIR, '.health.json');
 const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 
 const DRY_RUN = !!process.env.LLM_DRY_RUN;
@@ -350,6 +351,11 @@ async function main() {
   const ok = results.filter(r => r.success).length;
   const totalNew = results.reduce((s, r) => s + (r.newTweets || []).length, 0);
   console.log(`\n📋 完成: ${ok}/${results.length} 成功, ${totalNew} 条新推文`);
+
+  // ponytail: 记录本轮抓取健康快照，供 daily-summary.js 区分"今天真的没新推文"
+  // 还是"抓取链路挂了"（Chrome 未登录/CDP 未连接导致全员 未登录）。
+  // 只反映最近一次 monitor 运行，不追溯历史失败。
+  fs.writeFileSync(HEALTH_PATH, JSON.stringify({ time: new Date().toISOString(), success: ok, total: results.length }, null, 2));
 
   const msg = buildSummaryMessage(results);
   if (msg && !NO_NOTIFY) {
