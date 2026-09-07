@@ -128,15 +128,15 @@
   },
   "llm": {
     "enabled": true,
-    "provider": "minimax",
-    "base_url": "https://api.minimaxi.com/anthropic/v1",
-    "model_quality": "MiniMax-M2.7",
-    "model_fast": "MiniMax-M2.7",
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "model_quality": "deepseek-chat",
+    "model_fast": "deepseek-chat",
     "timeout_ms": 60000,
     "max_retries": 3,
     "temperature": 0.3,
     "max_tokens": 1024,
-    "_comment": "Token Plan Key 走 Anthropic 兼容端点；highspeed 高峰期受限，默认用 M2.7"
+    "_comment": "DeepSeek 走 OpenAI 兼容端点 /chat/completions"
   },
   "daily_summary": {
     "enabled": true,

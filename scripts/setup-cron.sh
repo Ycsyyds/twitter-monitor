@@ -77,12 +77,12 @@ show_status() {
   # Node.js
   echo "  ✅ Node.js $(node -v 2>/dev/null || echo 未安装)"
 
-  # MiniMax key
+  # DeepSeek key
   if [ -f "$HOME/.config/twitter-monitor/.env" ]; then
-    if grep -q "^MINIMAX_API_KEY=sk-" "$HOME/.config/twitter-monitor/.env" 2>/dev/null; then
-      echo "  ✅ MiniMax API key 已配置"
+    if grep -q "^DEEPSEEK_API_KEY=sk-" "$HOME/.config/twitter-monitor/.env" 2>/dev/null; then
+      echo "  ✅ DeepSeek API key 已配置"
     else
-      echo "  ⚠️  ~/.config/twitter-monitor/.env 缺少 MINIMAX_API_KEY"
+      echo "  ⚠️  ~/.config/twitter-monitor/.env 缺少 DEEPSEEK_API_KEY"
     fi
   else
     echo "  ❌ ~/.config/twitter-monitor/.env 不存在 (无 LLM 能力)"
@@ -94,7 +94,7 @@ case "${1:-status}" in
   remove)  remove_cron ;;
   status)  show_status ;;
   ping)
-    echo "🩺 LLM 健康检查 (调用 MiniMax API)..."
+    echo "🩺 LLM 健康检查 (调用 DeepSeek API)..."
     cd "$PROJECT_DIR" && $NODE scripts/llm.js
     ;;
   *)       echo "用法: $0 [install|remove|status|ping]" ;;

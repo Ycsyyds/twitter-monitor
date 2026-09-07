@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * MiniMax LLM 客户端（Anthropic 兼容接口 — Token Plan Key）
+ * DeepSeek LLM 客户端（OpenAI 兼容接口）
  *
- * Token Plan Key (sk-cp-*) 必须走 Anthropic 兼容端点：
- *   POST https://api.minimaxi.com/anthropic/v1/messages
- *   Header: x-api-key / anthropic-version
+ * DeepSeek API 走 OpenAI 兼容端点：
+ *   POST https://api.deepseek.com/chat/completions
+ *   Header: Authorization: Bearer <key>
  *
  * 设计要点：
  *  - 密钥按 env > ~/.config/twitter-monitor/.env > <project>/.env 顺序加载
- *  - 自动从 content[] 中提取 thinking 块和 text 块
+ *  - 从 choices[0].message.content 中提取回复文本
  *  - JSON 模式带容错：先正则提取 ```json``` 代码块，失败再尝试整段 JSON.parse
  *  - 3 次指数退避重试；429/余额/认证不重试
  *  - 用量写到 logs/llm.log
@@ -40,14 +40,14 @@ function parseDotEnv(filePath) {
 }
 
 function loadEnv() {
-  if (process.env.MINIMAX_API_KEY) return { ...process.env };
+  if (process.env.DEEPSEEK_API_KEY) return { ...process.env };
   const candidates = [
     path.join(process.env.HOME || '/root', '.config', 'twitter-monitor', '.env'),
     path.join(__dirname, '..', '.env'),
   ];
   for (const p of candidates) {
     const env = parseDotEnv(p);
-    if (env.MINIMAX_API_KEY) return { ...process.env, ...env };
+    if (env.DEEPSEEK_API_KEY) return { ...process.env, ...env };
   }
   return { ...process.env };
 }
@@ -55,9 +55,9 @@ function loadEnv() {
 const ENV = loadEnv();
 
 const DEFAULTS = {
-  base_url: ENV.MINIMAX_BASE_URL || 'https://api.minimaxi.com/anthropic/v1',
-  model_quality: 'MiniMax-M2.7',
-  model_fast: 'MiniMax-M2.7',  // highspeed 在高峰期受限，默认用 M2.7
+  base_url: ENV.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+  model_quality: 'deepseek-chat',
+  model_fast: 'deepseek-chat',
   timeout_ms: 60000,
   max_retries: 3,
   temperature: 0.3,
@@ -112,16 +112,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ---------- 输出清洗 ----------
 
 /**
- * 从 Anthropic 格式的 content[] 中提取 text 块（跳过 thinking 块）
- */
-function extractTextFromContent(content) {
-  if (!Array.isArray(content)) return String(content || '');
-  const textBlocks = content.filter(b => b.type === 'text').map(b => b.text);
-  return textBlocks.join('\n').trim();
-}
-
-/**
- * 剥离 <think>...</think>（兼容旧格式 / 非 Anthropic 端点）
+ * 剥离 <think>...</think>（兼容 deepseek-reasoner / 旧格式）
  */
 function stripThink(text) {
   if (!text) return '';
@@ -154,38 +145,27 @@ function extractJSON(text) {
 async function chat(messages, opts = {}) {
   const cfg = getConfig();
   const model = opts.model || cfg.model_fast;
-  const apiKey = ENV.MINIMAX_API_KEY;
+  const apiKey = ENV.DEEPSEEK_API_KEY;
 
   if (opts.dry_run) {
     const mock = typeof opts.mock === 'function' ? opts.mock(messages) : (opts.mock || '{"mock": true}');
     return { text: mock, usage: { dry_run: true }, raw: null };
   }
 
-  if (!apiKey) throw new Error('MINIMAX_API_KEY 未配置');
+  if (!apiKey) throw new Error('DEEPSEEK_API_KEY 未配置');
 
-  // 构造 Anthropic Messages API body
-  // 提取 system message（如果有）
-  let systemPrompt = '';
-  const apiMessages = [];
-  for (const m of messages) {
-    if (m.role === 'system') {
-      systemPrompt += (systemPrompt ? '\n' : '') + m.content;
-    } else {
-      apiMessages.push({ role: m.role, content: m.content });
-    }
-  }
+  // 构造 OpenAI Chat Completions API body（system/user/assistant 角色原样传递）
+  const apiMessages = messages.map(m => ({ role: m.role, content: m.content }));
 
   const body = {
     model,
     max_tokens: opts.max_tokens ?? opts.max_completion_tokens ?? cfg.max_tokens,
     messages: apiMessages,
-    ...(systemPrompt ? { system: systemPrompt } : {}),
     ...(opts.temperature != null ? { temperature: opts.temperature } : { temperature: cfg.temperature }),
   };
 
   const headers = {
-    'x-api-key': apiKey,
-    'anthropic-version': '2023-06-01',
+    Authorization: `Bearer ${apiKey}`,
   };
 
   let lastErr = null;
@@ -197,7 +177,7 @@ async function chat(messages, opts = {}) {
       ? (opts.timeout_ms ?? cfg.timeout_ms)
       : Math.floor((opts.timeout_ms ?? cfg.timeout_ms) / 2); // 重试时超时减半
     try {
-      const url = cfg.base_url.replace(/\/$/, '') + '/messages';
+      const url = cfg.base_url.replace(/\/$/, '') + '/chat/completions';
       const resp = await postJSON(url, headers, body, timeoutForAttempt);
 
       // 认证错误
@@ -205,35 +185,33 @@ async function chat(messages, opts = {}) {
         throw new Error(`auth error ${resp.status}: ${resp.raw?.slice(0, 200)}`);
       }
 
-      // 限流 / 余额
-      if (resp.status === 429 || resp.body?.error?.type === 'rate_limit_error') {
+      // 限流 / 余额不足
+      if (resp.status === 429) {
         const msg = resp.body?.error?.message || resp.raw?.slice(0, 300) || '';
-        const resetMatch = msg.match(/resets at ([\dT:+\-.]+)/);
-        const err = new Error(`MiniMax 配额受限：${msg.slice(0, 200)}`);
+        const err = new Error(`DeepSeek 配额受限：${msg.slice(0, 200)}`);
         err.code = 'RATE_LIMITED';
-        err.resets_at = resetMatch ? resetMatch[1] : null;
         throw err;
       }
-      if (resp.body?.base_resp?.status_code === 1008) {
-        const err = new Error('MiniMax 余额不足 (1008)');
+      if (resp.status === 402 || /insufficient balance/i.test(resp.body?.error?.message || '')) {
+        const err = new Error('DeepSeek 余额不足');
         err.code = 'INSUFFICIENT_BALANCE';
         throw err;
       }
 
       // 其它错误
-      if (resp.body?.type === 'error') {
-        throw new Error(`API error: ${resp.body?.error?.message || resp.raw?.slice(0, 200)}`);
+      if (resp.body?.error) {
+        throw new Error(`API error: ${resp.body.error.message || resp.raw?.slice(0, 200)}`);
       }
       if (resp.status < 200 || resp.status >= 300) {
         throw new Error(`HTTP ${resp.status}: ${resp.raw?.slice(0, 200)}`);
       }
 
-      // 成功：从 content[] 提取 text
-      const text = extractTextFromContent(resp.body?.content);
+      // 成功：从 choices[0].message.content 提取 text
+      const text = (resp.body?.choices?.[0]?.message?.content || '').trim();
       const usage = resp.body?.usage || {};
       logUsage({
         model, attempt, ms: Date.now() - t0,
-        input_tokens: usage.input_tokens, output_tokens: usage.output_tokens,
+        input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens,
       });
       return { text, usage, raw: resp.body };
     } catch (e) {
@@ -293,7 +271,7 @@ async function completeText(systemPrompt, userPrompt, opts = {}) {
 // ---------- 健康检查 ----------
 
 async function ping() {
-  if (!ENV.MINIMAX_API_KEY) return { ok: false, reason: 'no_api_key' };
+  if (!ENV.DEEPSEEK_API_KEY) return { ok: false, reason: 'no_api_key' };
   try {
     const result = await chat(
       [{ role: 'user', content: '回复一个字：好' }],

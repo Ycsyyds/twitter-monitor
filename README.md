@@ -1,6 +1,6 @@
 # Twitter AI 大佬监控系统 — 带 LLM 洞察 + 三层记忆
 
-自动监控 18 个 AI 领域大佬与官方/团队账号的 Twitter/X 动态，**用 MiniMax LLM 逐条提炼洞察**，飞书通知 + 每日 LLM 日报 + 每周知识蒸馏。目标：从"资讯搬运工"升级为"个人 AI 分析师 + 第二大脑"。
+自动监控 18 个 AI 领域大佬与官方/团队账号的 Twitter/X 动态，**用 DeepSeek LLM 逐条提炼洞察**，飞书通知 + 每日 LLM 日报 + 每周知识蒸馏。目标：从"资讯搬运工"升级为"个人 AI 分析师 + 第二大脑"。
 
 ## 三层记忆架构
 
@@ -69,18 +69,18 @@
 - CDP Proxy 运行中（端口 3456）
 - lark-cli 已登录（`lark-cli auth login --recommend`）
 
-### 2. 配置 MiniMax API Key
+### 2. 配置 DeepSeek API Key
 
 ```bash
 mkdir -p ~/.config/twitter-monitor
 chmod 700 ~/.config/twitter-monitor
 cat > ~/.config/twitter-monitor/.env <<EOF
-MINIMAX_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 EOF
 chmod 600 ~/.config/twitter-monitor/.env
 ```
 
-去 [MiniMax 控制台](https://platform.minimaxi.com/user-center/basic-information/interface-key) 申请 key。`MiniMax-M2.7-highspeed` 用于单条推文提炼，`MiniMax-M2.7` 用于日报/周报聚合。
+去 [DeepSeek 开放平台](https://platform.deepseek.com/api_keys) 申请 key。`deepseek-chat` 同时用于单条推文提炼与日报/周报聚合。
 
 ⚠️ Key 永远不写进仓库。`.gitignore` 已禁止提交 `.env`。
 
@@ -88,7 +88,7 @@ chmod 600 ~/.config/twitter-monitor/.env
 
 ```bash
 ./scripts/setup-cron.sh status   # 检查 Chrome / CDP Proxy / lark-cli / API key
-./scripts/setup-cron.sh ping     # 真实调用一次 MiniMax，确认配额可用
+./scripts/setup-cron.sh ping     # 真实调用一次 DeepSeek，确认配额可用
 ```
 
 ### 4. 配置飞书通知
@@ -146,7 +146,7 @@ twitter-monitor/
 │   ├── monitor.js              # 抓推文 + LLM 单条洞察
 │   ├── daily-summary.js        # LLM 日报聚合
 │   ├── weekly-distill.js       # LLM 周度蒸馏
-│   ├── llm.js                  # MiniMax 客户端（重试/降级/<think> 剥离）
+│   ├── llm.js                  # DeepSeek 客户端（重试/降级/<think> 剥离）
 │   ├── insights.js             # 三个核心 prompt
 │   ├── notify.js               # 飞书通知（lark-cli + Webhook 双通道）
 │   ├── setup-cron.sh           # cron 管理 + 健康检查 + ping
@@ -189,7 +189,7 @@ twitter-monitor/
 - **置顶推文过滤**：发布时间超出保留窗口（默认 7 天）的置顶推文会被丢弃，避免长期挂顶的旧推文被反复判为"新动态"重复推送
 - **跨账号去重**：同一轮抓取中，同一条推文（转推同 URL）或同内容（多个官方号发布同一消息，文本签名相同）只展示一次，由名单中靠前的账号"认领"
 
-## 成本估算（按 MiniMax 国内价格，仅供参考）
+## 成本估算（按 DeepSeek 官方价格，仅供参考）
 
 假设 9 个人 × 每天 12 条新推文（平均）= 100 条/天：
 
